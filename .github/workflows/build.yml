@@ -7,33 +7,38 @@ on:
   workflow_dispatch:
 
 env:
-  # Opt every JavaScript action into the Node 24 runtime now, which silences
-  # the "Node.js 20 is deprecated" annotation.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build:
-    # Pinned on purpose so the ubuntu-latest -> Ubuntu 26 migration can't change the toolchain under you.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
-      # Forge 1.20.1 needs JDK 17, Forge 1.21.1 needs JDK 21.
-      # Detect the Minecraft version from the project files so this one
-      # workflow file works unchanged in both mod repositories.
+      # Forge 1.20.1 -> JDK 17, Forge 1.21.1 -> JDK 21.
+      # We read the exact `minecraft_version=` property instead of grepping for
+      # "1.21", because Forge templates contain minecraft_version_range=[1.20.1,1.21)
+      # which falsely matches "1.21" and would select JDK 21 for a 1.20.1 project.
       - name: Detect Minecraft version and required JDK
         id: mc
         run: |
-          if grep -rqE "1\.21(\.1)?" gradle.properties build.gradle 2>/dev/null; then
-            echo "java=21" >> "$GITHUB_OUTPUT"
-            echo "mc=1.21.1" >> "$GITHUB_OUTPUT"
-          else
-            echo "java=17" >> "$GITHUB_OUTPUT"
-            echo "mc=1.20.1" >> "$GITHUB_OUTPUT"
+          MC=""
+          if [ -f gradle.properties ]; then
+            MC=$(grep -E '^[[:space:]]*minecraft_version[[:space:]]*=' gradle.properties | head -1 | cut -d= -f2 | tr -d ' \r')
           fi
+          if [ -z "$MC" ]; then
+            MC=$(grep -oE 'net\.minecraftforge:forge:1\.[0-9]+(\.[0-9]+)?' build.gradle 2>/dev/null | head -1 | sed 's/.*forge://')
+          fi
+          case "$MC" in
+            1.21*|1.22*|1.23*) JAVA=21 ;;
+            *)                 JAVA=17 ;;
+          esac
+          echo "Detected Minecraft '${MC:-unknown}' -> JDK $JAVA"
+          echo "mc=${MC:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "java=$JAVA" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK ${{ steps.mc.outputs.java }}
         uses: actions/setup-java@v5
@@ -41,9 +46,6 @@ jobs:
           distribution: temurin
           java-version: ${{ steps.mc.outputs.java }}
 
-      # Cache is fully disabled: the GitHub cache service outage (HTTP 400 /
-      # "Our services aren't available") can no longer produce save or restore
-      # errors. Gradle simply re-downloads what it needs.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
         continue-on-error: true
@@ -54,15 +56,17 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # The real build is deliberately NOT continue-on-error, otherwise a
-      # genuine compile failure would be reported as a green check.
+      - name: Show toolchain
+        run: |
+          java -version
+          ./gradlew --version
+
       - name: Build
         run: ./gradlew build --no-daemon --stacktrace
 
       - name: Upload mod jar
-        if: always()
-        uses: actions/upload-artifact@v5
-        continue-on-error: true
+        if: success()
+        uses: actions/upload-artifact@v6
         with:
           name: mod-${{ steps.mc.outputs.mc }}
           path: |
