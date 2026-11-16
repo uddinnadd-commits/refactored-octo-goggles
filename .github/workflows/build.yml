@@ -88,6 +88,20 @@ jobs:
           cache-disabled: true
           validate-wrappers: false
 
+      # Forge MDK templates contain `jar.finalizedBy('reobfJar')`. If the applied
+      # plugin does not register a reobfJar task, Gradle aborts with
+      # "Task with path 'reobfJar' not found". Rewrite that line so it only
+      # wires the dependency when the task actually exists.
+      - name: Guard optional reobfJar finalizer
+        if: steps.proj.outputs.found == 'true'
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if [ -f build.gradle ]; then
+            sed -i -E "s/^([[:space:]]*)jar\.finalizedBy[[:space:]]*\(?[[:space:]]*(['\"])reobfJar\2[[:space:]]*\)?[[:space:]]*$/\1afterEvaluate { if (tasks.findByName('reobfJar')) { jar.finalizedBy('reobfJar') } }/" build.gradle
+            echo "reobfJar references after patch:"
+            grep -n "reobfJar" build.gradle || echo "(none)"
+          fi
+
       - name: Build (wrapper)
         if: steps.proj.outputs.found == 'true' && steps.proj.outputs.wrapper == 'true'
         working-directory: ${{ steps.proj.outputs.dir }}
